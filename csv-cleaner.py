@@ -33,6 +33,9 @@ def process_data(df, teacher, subject, course, level):
     ]
     df.drop(columns=columns_to_drop, inplace=True, errors='ignore')
 
+    # Remove "Missing" literal and treat as blank
+    df.replace("Missing", pd.NA, inplace=True)
+
     exclusion_phrases = ["(Count in Grade)", "Category Score", "Ungraded"]
     columns_info = []
     general_columns = []
@@ -98,19 +101,20 @@ def process_data(df, teacher, subject, course, level):
             if col.startswith("Average "):
                 cat = col[len("Average "):]
                 if any(cat.lower()==k.lower() for k in weights):
-                    total += row[col] if pd.notna(row[col]) else 0
-                    valid = True
-        return custom_round(total) if valid else None
+                    val = row[col]
+                    if pd.notna(val):
+                        total += val
+                        valid = True
+        return custom_round(total) if valid else pd.NA
 
     df_final["Final Grade"] = df_final.apply(compute_final_grade, axis=1)
-
-    df_final.replace("Missing", "", inplace=True)
 
     # Export to Excel
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter',
                         engine_kwargs={'options': {'nan_inf_to_errors': True}}) as writer:
-        df_final.fillna('').to_excel(writer, 'Sheet1', startrow=6, index=False)
+        # We still write an initial sheet so filters/column widths work, but values will be blank in the manual loop
+        df_final.to_excel(writer, 'Sheet1', startrow=6, index=False)
         wb = writer.book
         ws = writer.sheets['Sheet1']
 
@@ -128,35 +132,45 @@ def process_data(df, teacher, subject, course, level):
         ws.write('A4',"Level:",b_fmt);   ws.write('B4',level,b_fmt)
         ws.write('A5',datetime.now().strftime("%y-%m-%d"),b_fmt)
 
-        # Write column headers
-        for i,col in enumerate(df_final.columns):
+        # Column headers
+        for idx, col in enumerate(df_final.columns):
+            fmt = header_fmt
             if col.startswith("Average "):
-                ws.write(6,i,col,avg_hdr)
-            elif col=="Final Grade":
-                ws.write(6,i,col,final_fmt)
+                fmt = avg_hdr
+            elif col == "Final Grade":
+                fmt = final_fmt
+            ws.write(6, idx, col, fmt)
+
+        # Data cells: write blank if NaN/NA, else the value
+        avg_cols = {c for c in df_final.columns if c.startswith("Average ")}
+        for col_idx, col in enumerate(df_final.columns):
+            # choose formatting
+            if col in avg_cols:
+                fmt = avg_data
+            elif col == "Final Grade":
+                fmt = final_fmt
             else:
-                ws.write(6,i,col,header_fmt)
+                fmt = b_fmt
 
-        # Apply cell formats
-        avg_cols = [c for c in df_final.columns if c.startswith("Average ")]
-        for j,col in enumerate(df_final.columns):
-            fmt = (avg_data if col in avg_cols else
-                   final_fmt if col=="Final Grade" else
-                   b_fmt)
-            for r in range(7,7+len(df_final)):
-                val = df_final.iloc[r-7,j]
-                ws.write(r,j,val,fmt)
+            for row_offset in range(len(df_final)):
+                val = df_final.iloc[row_offset, col_idx]
+                excel_row = 7 + row_offset
+                if pd.isna(val):
+                    ws.write(excel_row, col_idx, "", fmt)
+                else:
+                    ws.write(excel_row, col_idx, val, fmt)
 
-        # Column widths
-        for idx,col in enumerate(df_final.columns):
+        # Adjust column widths
+        name_terms = ["name", "first", "last"]
+        for idx, col in enumerate(df_final.columns):
             if any(t in col.lower() for t in name_terms):
-                ws.set_column(idx,idx,25)
+                ws.set_column(idx, idx, 25)
             elif col.startswith("Average "):
-                ws.set_column(idx,idx,7)
-            elif col=="Final Grade":
-                ws.set_column(idx,idx,12)
+                ws.set_column(idx, idx, 7)
+            elif col == "Final Grade":
+                ws.set_column(idx, idx, 12)
             else:
-                ws.set_column(idx,idx,5)
+                ws.set_column(idx, idx, 5)
 
     output.seek(0)
     return output
