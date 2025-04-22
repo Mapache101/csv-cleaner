@@ -235,3 +235,44 @@ def process_data(df, teacher, subject, course, level):
                 worksheet.set_column(idx, idx, 10)
 
     return output
+def main():
+    st.set_page_config(page_title="Gradebook Organizer")
+    
+    # Sidebar instructions.
+    st.sidebar.markdown("""
+        1. **Ensure Schoology is set to English**  
+        2. Navigate to the **course** you want to export  
+        3. Click on **Gradebook**  
+        4. Click the **three dots** on the top-right corner and select **Export**  
+        5. Choose **Gradebook as CSV**  
+        6. **Upload** that CSV file to this program  
+        7. Fill in the required fields  
+        8. Click **Download Organized Gradebook (Excel)**  
+        9. 🎉 **Enjoy!**
+    """)
+
+    st.title("Griffin CSV to Excel 📊")
+    teacher = st.text_input("Enter teacher's name:")
+    subject = st.text_input("Enter subject area:")
+    course = st.text_input("Enter class:")
+    level = st.text_input("Enter level:")
+    uploaded_file = st.file_uploader("Upload CSV file", type=["csv"])
+
+    if uploaded_file is not None:
+        try:
+            df = pd.read_csv(uploaded_file)
+            # Convert all column headers to strings to avoid potential issues.
+            df.columns = df.columns.astype(str)
+            output_excel = process_data(df, teacher, subject, course, level)
+            st.download_button(
+                label="Download Organized Gradebook (Excel)",
+                data=output_excel,
+                file_name="final_cleaned_gradebook.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            st.success("Processing completed!")
+        except Exception as e:
+            st.error(f"An error occurred: {e}")
+
+if __name__ == "__main__":
+    main()
