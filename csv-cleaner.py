@@ -6,13 +6,6 @@ import xlsxwriter
 from datetime import datetime
 import math  # Import the math module to use the ceil function
 
-# Custom round function that always rounds .5 up
-def custom_round(value):
-    if value % 1 == 0.5:
-        return math.ceil(value)
-    else:
-        return round(value)
-
 # Weights per category as defined by the Bolivian law
 weights = {
     "Auto eval": 0.05,
@@ -21,6 +14,13 @@ weights = {
     "TO DO_HACER": 0.40,
     "TO KNOW_SABER": 0.45
 }
+
+# Custom round function that always rounds .5 up
+def custom_round(value):
+    if value % 1 == 0.5:
+        return math.ceil(value)  # Round up if .5
+    else:
+        return round(value)
 
 def process_data(df, teacher, subject, course, level):
     # Updated list of columns to drop from the CSV (if present)
@@ -230,15 +230,8 @@ def process_data(df, teacher, subject, course, level):
             if any(term in col_name.lower() for term in ["name", "first", "last"]):
                 worksheet.set_column(idx, idx, 25)
             elif col_name.startswith("Average "):
-                worksheet.set_column(idx, idx, 18)
-            else:
                 worksheet.set_column(idx, idx, 15)
+            else:
+                worksheet.set_column(idx, idx, 10)
 
-    # Send Excel file to user.
-    output.seek(0)
-    st.download_button(
-        label="Download the Report",
-        data=output,
-        file_name="Grade Report.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    return output
