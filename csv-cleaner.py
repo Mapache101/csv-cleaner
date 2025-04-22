@@ -235,6 +235,7 @@ def process_data(df, teacher, subject, course, level):
                 worksheet.set_column(idx, idx, 10)
 
     return output
+
 def main():
     st.set_page_config(page_title="Gradebook Organizer")
     
