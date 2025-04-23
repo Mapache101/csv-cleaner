@@ -133,9 +133,22 @@ def process_data(df, teacher, subject, course, level):
         wb = writer.book
         ws = writer.sheets['Sheet1']
 
-        # Formats
-        header_fmt = wb.add_format({'bold': True, 'border': 1, 'rotation': 90, 'shrink': True})
-        avg_hdr = wb.add_format({'bold': True, 'border': 1, 'rotation': 90, 'shrink': True, 'bg_color': '#ADD8E6'})
+        # Formats with wrap-text and shrink-to-fit
+        header_fmt = wb.add_format({
+            'bold': True,
+            'border': 1,
+            'rotation': 90,
+            'shrink': True,
+            'text_wrap': True
+        })
+        avg_hdr = wb.add_format({
+            'bold': True,
+            'border': 1,
+            'rotation': 90,
+            'shrink': True,
+            'text_wrap': True,
+            'bg_color': '#ADD8E6'
+        })
         avg_data = wb.add_format({'border': 1, 'bg_color': '#ADD8E6'})
         final_fmt = wb.add_format({'bold': True, 'border': 1, 'bg_color': '#90EE90'})
         b_fmt = wb.add_format({'border': 1})
