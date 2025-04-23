@@ -92,11 +92,14 @@ def process_data(df, teacher, subject, course, level):
     for cat in group_order:
         grp = sorted(groups[cat], key=lambda x: x['seq_num'])
         names = [d['new_name'] for d in grp]
+        # Convert to numeric
         numeric = df_cleaned[names].apply(lambda x: pd.to_numeric(x, errors='coerce'))
-        # Scale each assignment to 100-point basis
+        # Scale each assignment to a 100-point basis
         for d in grp:
-            if d['max_points']:
+            if d['max_points'] and d['max_points'] > 0:
                 numeric[d['new_name']] = numeric[d['new_name']] * (100.0 / d['max_points'])
+        # Overwrite original columns with scaled values
+        df_cleaned[names] = numeric
         # Compute raw mean then apply weight
         raw = numeric.mean(axis=1)
         wt = next((w for k, w in weights.items() if k.lower() == cat.lower()), None)
