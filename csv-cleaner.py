@@ -49,13 +49,10 @@ def process_data(df, teacher, subject, course, level):
             continue
 
         if "Grading Category:" in col:
-            # Extract category
             m_cat = re.search(r'Grading Category:\s*([^,)]+)', col)
             category = m_cat.group(1).strip() if m_cat else "Unknown"
-            # Extract max points
             m_pts = re.search(r'Max Points:\s*([\d\.]+)', col)
             max_pts = float(m_pts.group(1)) if m_pts else None
-            # Build new name
             base_name = col.split('(')[0].strip()
             new_name = f"{base_name} {category}".strip()
             columns_info.append({
@@ -92,15 +89,11 @@ def process_data(df, teacher, subject, course, level):
     for cat in group_order:
         grp = sorted(groups[cat], key=lambda x: x['seq_num'])
         names = [d['new_name'] for d in grp]
-        # Convert to numeric
         numeric = df_cleaned[names].apply(lambda x: pd.to_numeric(x, errors='coerce'))
-        # Scale each assignment to a 100-point basis
         for d in grp:
             if d['max_points'] and d['max_points'] > 0:
                 numeric[d['new_name']] = numeric[d['new_name']] * (100.0 / d['max_points'])
-        # Overwrite original columns with scaled values
         df_cleaned[names] = numeric
-        # Compute raw mean then apply weight
         raw = numeric.mean(axis=1)
         wt = next((w for k, w in weights.items() if k.lower() == cat.lower()), None)
         avg_col = f"Average {cat}"
@@ -133,7 +126,7 @@ def process_data(df, teacher, subject, course, level):
         wb = writer.book
         ws = writer.sheets['Sheet1']
 
-        # Formats with wrap-text and shrink-to-fit
+        # Formats: wrap headers, integer-only avg data
         header_fmt = wb.add_format({
             'bold': True,
             'border': 1,
@@ -149,7 +142,11 @@ def process_data(df, teacher, subject, course, level):
             'text_wrap': True,
             'bg_color': '#ADD8E6'
         })
-        avg_data = wb.add_format({'border': 1, 'bg_color': '#ADD8E6'})
+        avg_data = wb.add_format({
+            'border': 1,
+            'bg_color': '#ADD8E6',
+            'num_format': '0'
+        })
         final_fmt = wb.add_format({'bold': True, 'border': 1, 'bg_color': '#90EE90'})
         b_fmt = wb.add_format({'border': 1})
 
