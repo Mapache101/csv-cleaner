@@ -204,7 +204,7 @@ def main():
         8. Click **Download Organized Gradebook (Excel)**  
         9. 🎉 **Enjoy!**
     """)
-    st.title("Griffin CSV to Excel 📊")
+    st.title("Griffin CSV to Excel v2 ")
     teacher = st.text_input("Enter teacher's name:")
     subject = st.text_input("Enter subject area:")
     course = st.text_input("Enter class:")
