@@ -19,6 +19,7 @@ weights = {
 def custom_round(value):
     return math.floor(value + 0.5)
 
+
 def process_data(df, teacher, subject, course, level):
     # Columns to drop
     columns_to_drop = [
@@ -41,21 +42,28 @@ def process_data(df, teacher, subject, course, level):
     general_columns = []
     cols_to_remove = {"ID de usuario único", "ID de usuario unico"}
 
+    # Parse and rename grading columns, capturing category and max points
     for i, col in enumerate(df.columns):
         col = str(col)
         if col in cols_to_remove or any(ph in col for ph in exclusion_phrases):
             continue
 
         if "Grading Category:" in col:
-            m = re.search(r'Grading Category:\s*([^,)]+)', col)
-            category = m.group(1).strip() if m else "Unknown"
+            # Extract category
+            m_cat = re.search(r'Grading Category:\s*([^,)]+)', col)
+            category = m_cat.group(1).strip() if m_cat else "Unknown"
+            # Extract max points
+            m_pts = re.search(r'Max Points:\s*([\d\.]+)', col)
+            max_pts = float(m_pts.group(1)) if m_pts else None
+            # Build new name
             base_name = col.split('(')[0].strip()
             new_name = f"{base_name} {category}".strip()
             columns_info.append({
                 'original': col,
                 'new_name': new_name,
                 'category': category,
-                'seq_num': i
+                'seq_num': i,
+                'max_points': max_pts
             })
         else:
             general_columns.append(col)
@@ -66,7 +74,7 @@ def process_data(df, teacher, subject, course, level):
     other_cols = [c for c in general_columns if c not in name_cols]
     general_reordered = name_cols + other_cols
 
-    # Coded columns in original sequence
+    # Preserve original sequence for coded columns
     sorted_coded = sorted(columns_info, key=lambda x: x['seq_num'])
     new_order = general_reordered + [d['original'] for d in sorted_coded]
 
@@ -79,32 +87,37 @@ def process_data(df, teacher, subject, course, level):
         groups.setdefault(d['category'], []).append(d)
     group_order = sorted(groups, key=lambda cat: min(d['seq_num'] for d in groups[cat]))
 
+    # Compute category averages with scaling to 100
     final_coded = []
     for cat in group_order:
         grp = sorted(groups[cat], key=lambda x: x['seq_num'])
         names = [d['new_name'] for d in grp]
-        avg_col = f"Average {cat}"
         numeric = df_cleaned[names].apply(lambda x: pd.to_numeric(x, errors='coerce'))
+        # Scale each assignment to 100-point basis
+        for d in grp:
+            if d['max_points']:
+                numeric[d['new_name']] = numeric[d['new_name']] * (100.0 / d['max_points'])
+        # Compute raw mean then apply weight
         raw = numeric.mean(axis=1)
-        wt = next((w for k,w in weights.items() if k.lower()==cat.lower()), None)
-        df_cleaned[avg_col] = (raw * wt) if wt is not None else raw
+        wt = next((w for k, w in weights.items() if k.lower() == cat.lower()), None)
+        avg_col = f"Average {cat}"
+        df_cleaned[avg_col] = raw * wt if wt is not None else raw
         final_coded.extend(names + [avg_col])
 
+    # Final ordering
     final_order = general_reordered + final_coded
     df_final = df_cleaned[final_order]
 
-    # Compute and round only the final grade
+    # Compute and round the final grade
     def compute_final_grade(row):
         total = 0
         valid = False
         for col in row.index:
             if col.startswith("Average "):
-                cat = col[len("Average "):]
-                if any(cat.lower()==k.lower() for k in weights):
-                    val = row[col]
-                    if pd.notna(val):
-                        total += val
-                        valid = True
+                val = row[col]
+                if pd.notna(val):
+                    total += val
+                    valid = True
         return custom_round(total) if valid else pd.NA
 
     df_final["Final Grade"] = df_final.apply(compute_final_grade, axis=1)
@@ -113,24 +126,23 @@ def process_data(df, teacher, subject, course, level):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter',
                         engine_kwargs={'options': {'nan_inf_to_errors': True}}) as writer:
-        # We still write an initial sheet so filters/column widths work, but values will be blank in the manual loop
         df_final.to_excel(writer, 'Sheet1', startrow=6, index=False)
         wb = writer.book
         ws = writer.sheets['Sheet1']
 
         # Formats
-        header_fmt = wb.add_format({'bold':True,'border':1,'rotation':90,'shrink':True})
-        avg_hdr = wb.add_format({'bold':True,'border':1,'rotation':90,'shrink':True,'bg_color':'#ADD8E6'})
-        avg_data = wb.add_format({'border':1,'bg_color':'#ADD8E6'})
-        final_fmt = wb.add_format({'bold':True,'border':1,'bg_color':'#90EE90'})
-        b_fmt = wb.add_format({'border':1})
+        header_fmt = wb.add_format({'bold': True, 'border': 1, 'rotation': 90, 'shrink': True})
+        avg_hdr = wb.add_format({'bold': True, 'border': 1, 'rotation': 90, 'shrink': True, 'bg_color': '#ADD8E6'})
+        avg_data = wb.add_format({'border': 1, 'bg_color': '#ADD8E6'})
+        final_fmt = wb.add_format({'bold': True, 'border': 1, 'bg_color': '#90EE90'})
+        b_fmt = wb.add_format({'border': 1})
 
         # Header info
-        ws.write('A1',"Teacher:",b_fmt); ws.write('B1',teacher,b_fmt)
-        ws.write('A2',"Subject:",b_fmt); ws.write('B2',subject,b_fmt)
-        ws.write('A3',"Class:",b_fmt);   ws.write('B3',course,b_fmt)
-        ws.write('A4',"Level:",b_fmt);   ws.write('B4',level,b_fmt)
-        ws.write('A5',datetime.now().strftime("%y-%m-%d"),b_fmt)
+        ws.write('A1', "Teacher:", b_fmt); ws.write('B1', teacher, b_fmt)
+        ws.write('A2', "Subject:", b_fmt); ws.write('B2', subject, b_fmt)
+        ws.write('A3', "Class:", b_fmt);   ws.write('B3', course, b_fmt)
+        ws.write('A4', "Level:", b_fmt);   ws.write('B4', level, b_fmt)
+        ws.write('A5', datetime.now().strftime("%y-%m-%d"), b_fmt)
 
         # Column headers
         for idx, col in enumerate(df_final.columns):
@@ -141,24 +153,14 @@ def process_data(df, teacher, subject, course, level):
                 fmt = final_fmt
             ws.write(6, idx, col, fmt)
 
-        # Data cells: write blank if NaN/NA, else the value
+        # Data cells
         avg_cols = {c for c in df_final.columns if c.startswith("Average ")}
         for col_idx, col in enumerate(df_final.columns):
-            # choose formatting
-            if col in avg_cols:
-                fmt = avg_data
-            elif col == "Final Grade":
-                fmt = final_fmt
-            else:
-                fmt = b_fmt
-
+            fmt = avg_data if col in avg_cols else final_fmt if col == "Final Grade" else b_fmt
             for row_offset in range(len(df_final)):
                 val = df_final.iloc[row_offset, col_idx]
                 excel_row = 7 + row_offset
-                if pd.isna(val):
-                    ws.write(excel_row, col_idx, "", fmt)
-                else:
-                    ws.write(excel_row, col_idx, val, fmt)
+                ws.write(excel_row, col_idx, "" if pd.isna(val) else val, fmt)
 
         # Adjust column widths
         name_terms = ["name", "first", "last"]
@@ -174,6 +176,7 @@ def process_data(df, teacher, subject, course, level):
 
     output.seek(0)
     return output
+
 
 def main():
     st.set_page_config(page_title="Gradebook Organizer")
@@ -210,5 +213,5 @@ def main():
         except Exception as e:
             st.error(f"An error occurred: {e}")
 
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
