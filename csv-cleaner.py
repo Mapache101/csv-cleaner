@@ -84,20 +84,22 @@ def process_data(df, teacher, subject, course, level):
         groups.setdefault(d['category'], []).append(d)
     group_order = sorted(groups, key=lambda cat: min(d['seq_num'] for d in groups[cat]))
 
-    # Compute category averages with scaling to 100
+    # Compute category averages exactly as Schoology does (sum of earned Points / sum of Max Points)
     final_coded = []
     for cat in group_order:
         grp = sorted(groups[cat], key=lambda x: x['seq_num'])
-        names = [d['new_name'] for d in grp]
-        numeric = df_cleaned[names].apply(lambda x: pd.to_numeric(x, errors='coerce'))
-        for d in grp:
-            if d['max_points'] and d['max_points'] > 0:
-                numeric[d['new_name']] = numeric[d['new_name']] * (100.0 / d['max_points'])
-        df_cleaned[names] = numeric
-        raw = numeric.mean(axis=1)
+        # Only include tasks with a positive max_points
+        valid = [d for d in grp if d['max_points'] and d['max_points'] > 0]
+        names = [d['new_name'] for d in valid]
+        # Convert earned points to numeric
+        earned = df_cleaned[names].apply(pd.to_numeric, errors='coerce')
+        # Sum earned and total possible
+        max_sum = sum(d['max_points'] for d in valid)
+        raw_pct = earned.sum(axis=1, skipna=True) / max_sum * 100
         wt = next((w for k, w in weights.items() if k.lower() == cat.lower()), None)
         avg_col = f"Average {cat}"
-        df_cleaned[avg_col] = raw * wt if wt is not None else raw
+        # Store weighted contribution if weight exists, else raw percentage
+        df_cleaned[avg_col] = raw_pct * wt if wt is not None else raw_pct
         final_coded.extend(names + [avg_col])
 
     # Final ordering
@@ -198,7 +200,7 @@ def main():
         2. Navigate to the **course** you want to export  
         3. Click on **Gradebook**  
         4. Click the **three dots** on the top-right corner and select **Export**  
-        5. Choose **Gradebook as CSV**  
+        5. Choose **Genrebook as CSV**  
         6. **Upload** that CSV file to this program  
         7. Fill in the required fields  
         8. Click **Download Organized Gradebook (Excel)**  
