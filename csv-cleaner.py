@@ -37,13 +37,15 @@ def process_data(df, teacher, subject, course, level):
     # Treat "Missing" as blank
     df.replace("Missing", pd.NA, inplace=True)
 
-    # Capture Schoology summary columns for each category
+    # Capture Schoology summary columns for each category, normalized
     summary_cols = {}
     for col in df.columns:
         if col.endswith(' - Category Score'):
             parts = col.split(' - ')
             if len(parts) >= 2:
-                cat = parts[-2].strip()
+                cat_raw = parts[-2].strip()
+                # normalize to weights key (case-insensitive)
+                cat = next((k for k in weights if k.lower() == cat_raw.lower()), cat_raw)
                 summary_cols[cat] = col
 
     # Parse raw assignment columns
@@ -56,7 +58,9 @@ def process_data(df, teacher, subject, course, level):
             continue
         if "Grading Category:" in col:
             m_cat = re.search(r'Grading Category:\s*([^,)]+)', col)
-            category = m_cat.group(1).strip() if m_cat else "Unknown"
+            cat_raw = m_cat.group(1).strip() if m_cat else "Unknown"
+            # normalize category to weights key
+            category = next((k for k in weights if k.lower() == cat_raw.lower()), cat_raw)
             m_pts = re.search(r'Max Points:\s*([\d\.]+)', col)
             max_pts = float(m_pts.group(1)) if m_pts else 0.0
             base_name = col.split('(')[0].strip()
@@ -74,7 +78,6 @@ def process_data(df, teacher, subject, course, level):
     # Identify name columns
     name_terms = ["first name", "last name", "name", "first", "last"]
     name_cols = [c for c in general_columns if any(t in c.lower() for t in name_terms)]
-    # Keep other general columns (if any)
     other_cols = [c for c in general_columns if c not in name_cols]
 
     # Build cleaned DataFrame with renamed raw columns
@@ -84,47 +87,45 @@ def process_data(df, teacher, subject, course, level):
     df_cleaned = df[new_order].copy()
     df_cleaned.rename({d['original']: d['new_name'] for d in columns_info}, axis=1, inplace=True)
 
-    # Group raw columns by category
+    # Group by normalized category
     groups = {}
     for d in columns_info:
         groups.setdefault(d['category'], []).append(d)
+
     # Compute weighted averages using summary columns
     avg_cols = []
-    for cat, dlist in groups.items():
+    for cat in weights:  # ensure consistent order if needed
         avg_col = f"Average {cat}"
         src = summary_cols.get(cat)
         if src:
             pct = pd.to_numeric(df[src], errors='coerce')
-            wt = next((w for k, w in weights.items() if k.lower() == cat.lower()), 1.0)
+            wt = weights[cat]
             df_cleaned[avg_col] = pct * wt
         else:
             df_cleaned[avg_col] = pd.NA
         avg_cols.append(avg_col)
 
-    # Build final column order: first/last, then for each category in desired order
+    # Build final column order: first/last, then each category raw+avg, final grade
     desired_cats = ["TO BE_SER", "TO DECIDE_DECIDIR", "TO DO_HACER", "TO KNOW_SABER", "Auto eval"]
     final_order = []
-    final_order.extend([c for c in name_cols])
+    final_order.extend(name_cols)
     for cat in desired_cats:
-        # add raw assignment columns for this category
+        # raw tasks for this category
         for d in sorted(groups.get(cat, []), key=lambda x: x['seq_num']):
             final_order.append(d['new_name'])
-        # then the average
+        # average column
         final_order.append(f"Average {cat}")
-    # finally, the final grade
     final_order.append("Final Grade")
 
-    df_final = df_cleaned.copy()
     # Compute final grade
-    def compute_final_grade(row):
-        total = sum(row[f"Average {cat}"] for cat in desired_cats if pd.notna(row[f"Average {cat}"]))
-        return custom_round(total)
-    df_final["Final Grade"] = df_final.apply(compute_final_grade, axis=1)
+    df_cleaned["Final Grade"] = df_cleaned.apply(
+        lambda row: custom_round(sum(row[f"Average {cat}"] for cat in desired_cats if pd.notna(row[f"Average {cat}"]))),
+        axis=1)
 
-    # Reorder df_final
-    df_final = df_final[final_order]
+    # Reorder and return
+    df_final = df_cleaned[final_order]
 
-    # Export to Excel (unchanged)
+    # Export to Excel unchanged
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter', engine_kwargs={'options': {'nan_inf_to_errors': True}}) as writer:
         df_final.to_excel(writer, 'Sheet1', startrow=6, index=False)
@@ -137,14 +138,12 @@ def process_data(df, teacher, subject, course, level):
         final_fmt = wb.add_format({'bold': True, 'border': 1, 'bg_color': '#90EE90'})
         b_fmt = wb.add_format({'border': 1})
 
-        # Header info
         ws.write('A1', "Teacher:", b_fmt); ws.write('B1', teacher, b_fmt)
         ws.write('A2', "Subject:", b_fmt); ws.write('B2', subject, b_fmt)
         ws.write('A3', "Class:", b_fmt); ws.write('B3', course, b_fmt)
         ws.write('A4', "Level:", b_fmt); ws.write('B4', level, b_fmt)
         ws.write('A5', datetime.now().strftime("%y-%m-%d"), b_fmt)
 
-        # Column headers
         for idx, col in enumerate(df_final.columns):
             fmt = header_fmt
             if col.startswith("Average "):
@@ -153,24 +152,27 @@ def process_data(df, teacher, subject, course, level):
                 fmt = final_fmt
             ws.write(6, idx, col, fmt)
 
-        # Data cells and widths
         for col_idx, col in enumerate(df_final.columns):
             if col.startswith("Average "):
-                cell_fmt = avg_data
+                fmt = avg_data
             elif col == "Final Grade":
-                cell_fmt = final_fmt
+                fmt = final_fmt
             else:
-                cell_fmt = b_fmt
+                fmt = b_fmt
             for row_offset in range(len(df_final)):
                 val = df_final.iloc[row_offset, col_idx]
-                ws.write(7 + row_offset, col_idx, "" if pd.isna(val) else val, cell_fmt)
+                ws.write(7 + row_offset, col_idx, "" if pd.isna(val) else val, fmt)
 
         for idx, col in enumerate(df_final.columns):
             low = col.lower()
-            if any(t in low for t in ["first", "last", "name"]): ws.set_column(idx, idx, 20)
-            elif col.startswith("Average "): ws.set_column(idx, idx, 10)
-            elif col == "Final Grade": ws.set_column(idx, idx, 12)
-            else: ws.set_column(idx, idx, 5)
+            if any(t in low for t in ["first", "last", "name"]):
+                ws.set_column(idx, idx, 20)
+            elif col.startswith("Average "):
+                ws.set_column(idx, idx, 10)
+            elif col == "Final Grade":
+                ws.set_column(idx, idx, 12)
+            else:
+                ws.set_column(idx, idx, 5)
     output.seek(0)
     return output
 
