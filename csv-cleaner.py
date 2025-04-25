@@ -6,7 +6,7 @@ import xlsxwriter
 from datetime import datetime
 import math
 
-# ——— 1) Make the weights dict use the exact category strings ———
+# ——— Exact weights you use in Schoology ———
 weights = {
     "AUTO EVAL":         0.05,
     "TO BE_SER":         0.05,
@@ -16,110 +16,82 @@ weights = {
 }
 
 def custom_round(value):
-    """Round half-up: .5 and above rounds up."""
+    """Round .5 and above up."""
     return math.floor(value + 0.5)
 
 def process_data(df, teacher, subject, course, level):
-    # ——— Drop unwanted columns ———
+    # 1) Drop everything except raw assignments + Category Score columns
     to_drop = [
         "Nombre de usuario", "Username", "Promedio General",
-        "Term1 - 2024", "Term1 - 2024 - AUTO EVAL - Category Score",
-        "Term1 - 2024 - TO BE_SER - Category Score",
-        "Term1 - 2024 - TO DECIDE_DECIDIR - Category Score",
-        "Term1 - 2024 - TO DO_HACER - Category Score",
-        "Term1 - 2024 - TO KNOW_SABER - Category Score",
+        # we no longer drop Category Score columns here
         "Unique User ID", "Overall", "2025", "Term1 - 2025",
         "Term2- 2025", "Term3 - 2025"
     ]
     df = df.drop(columns=to_drop, errors='ignore')
-
-    # Treat “Missing” as blank → NaN
     df.replace("Missing", pd.NA, inplace=True)
 
-    exclusion_phrases = ["(Count in Grade)", "Category Score", "Ungraded"]
-    columns_info = []
-    general_columns = []
-    cols_to_remove = {"ID de usuario único", "ID de usuario unico"}
+    # 2) Identify raw-assignment columns vs Category Score columns
+    assignment_cols = []
+    category_score_cols = {}
+    exclusion = ["(Count in Grade)", "Ungraded"]
 
-    # ——— Identify each “Grading Category:” column ———
-    for i, col in enumerate(df.columns):
-        col = str(col)
-        if col in cols_to_remove or any(ph in col for ph in exclusion_phrases):
+    for col in df.columns:
+        col_str = str(col)
+        if any(ph in col_str for ph in exclusion):
             continue
 
-        if "Grading Category:" in col:
-            m_cat = re.search(r'Grading Category:\s*([^,)]+)', col)
-            category = m_cat.group(1).strip() if m_cat else "Unknown"
+        # Category Score: e.g. "Term1 - 2025 - TO DO_HACER - Category Score"
+        m = re.match(r".*-\s*([^–-]+?)\s*-\s*Category Score$", col_str)
+        if m:
+            cat = m.group(1).strip()
+            category_score_cols[cat] = col_str
+        elif "Grading Category:" in col_str:
+            # raw assignment column
+            # rename it to "<base> <category>"
+            m2 = re.search(r'Grading Category:\s*([^,)]+)', col_str)
+            cat2 = m2.group(1).strip() if m2 else ""
+            base = col_str.split('(')[0].strip()
+            new_name = f"{base} {cat2}"
+            df.rename({col_str: new_name}, axis=1, inplace=True)
+            assignment_cols.append(new_name)
 
-            m_pts = re.search(r'Max Points:\s*([\d\.]+)', col)
-            max_pts = float(m_pts.group(1)) if m_pts else 0.0
-
-            base = col.split('(')[0].strip()
-            new_name = f"{base} {category}"
-
-            columns_info.append({
-                'original':   col,
-                'new_name':   new_name,
-                'category':   category,
-                'seq_num':    i,
-                'max_points': max_pts
-            })
-        else:
-            general_columns.append(col)
-
-    # ——— Pull out name columns first ———
+    # 3) Pull names first
     name_terms = ["name", "first", "last"]
-    name_cols  = [c for c in general_columns if any(t in c.lower() for t in name_terms)]
+    name_cols = [c for c in df.columns
+                 if any(t in c.lower() for t in name_terms)]
 
-    # Reorder & rename assignment columns
-    sorted_asmts = sorted(columns_info, key=lambda d: d['seq_num'])
-    df_clean = df[name_cols + [d['original'] for d in sorted_asmts]].copy()
-    df_clean.rename({d['original']: d['new_name'] for d in columns_info},
-                    axis=1, inplace=True)
-
-    # ——— Compute each category’s weighted percentage ———
-    groups = {}
-    for d in columns_info:
-        groups.setdefault(d['category'], []).append(d)
-
+    # 4) Build our "Average <category>" from the Category Score columns
     avg_cols = []
-    for cat in weights:
-        if cat not in groups:
+    for cat, w in weights.items():
+        raw_col = category_score_cols.get(cat)
+        if not raw_col:
             continue
-        items = sorted(groups[cat], key=lambda d: d['seq_num'])
-        names = [d['new_name'] for d in items]
-
-        raw = (df_clean[names]
-               .apply(pd.to_numeric, errors='coerce')
-               .fillna(0))
-
-        total_earned   = raw.sum(axis=1)
-        total_possible = sum(d['max_points'] for d in items) or 1.0
-        pct            = total_earned / total_possible * 100
-        contrib        = pct * weights[cat]
-
         avg_name = f"Average {cat}"
-        df_clean[avg_name] = contrib
-        avg_cols.append((cat, names, avg_name))
+        # convert percent → numeric
+        df[avg_name] = pd.to_numeric(df[raw_col], errors='coerce').fillna(0)
+        avg_cols.append((cat, avg_name))
 
-    # ——— Final Grade = sum of weighted contribs, rounded half-up ———
-    df_clean["Final Grade"] = (
-        df_clean[[avg for (_, _, avg) in avg_cols]]
-        .sum(axis=1)
-        .apply(custom_round)
+    # 5) Compute Final Grade = sum( avg% * weight ) then round half-up
+    df["Final Grade"] = df.apply(
+        lambda row: custom_round(
+            sum(row[avg]*weights[cat] for cat, avg in avg_cols)
+        ),
+        axis=1
     )
 
-    # ——— Reorder columns exactly as you requested ———
+    # 6) Final column ordering:
     ordered = []
     ordered.extend(name_cols)
-    for cat, names, avg in avg_cols:
-        ordered.extend(names)
+    # then all raw assignments, in the order they were in the CSV
+    ordered.extend([c for c in assignment_cols])
+    # then each Average <cat> in weights order
+    for cat, avg in avg_cols:
         ordered.append(avg)
     ordered.append("Final Grade")
 
-    df_final = df_clean[ordered]
+    df_final = df[ordered]
 
-    # ——— Export to Excel ———
+    # 7) Export to Excel (identical to your existing code)
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter',
                         engine_kwargs={'options': {'nan_inf_to_errors': True}}) as writer:
@@ -136,7 +108,7 @@ def process_data(df, teacher, subject, course, level):
         ws.write('A4', "Level:",   b_fmt); ws.write('B4', level,   b_fmt)
         ws.write('A5', datetime.now().strftime("%y-%m-%d"), b_fmt)
 
-        # Header formats
+        # Formats
         header_fmt = wb.add_format({
             'bold': True, 'border': 1,
             'rotation': 90, 'shrink': True, 'text_wrap': True
@@ -152,17 +124,17 @@ def process_data(df, teacher, subject, course, level):
         final_fmt = wb.add_format({'bold': True, 'border': 1, 'bg_color': '#90EE90'})
 
         # Write column headers
-        for col_idx, col in enumerate(df_final.columns):
+        for idx, col in enumerate(df_final.columns):
             if col == "Final Grade":
                 fmt = final_fmt
             elif col.startswith("Average "):
                 fmt = avg_hdr
             else:
                 fmt = header_fmt
-            ws.write(6, col_idx, col, fmt)
+            ws.write(6, idx, col, fmt)
 
-        # Write the data rows
-        for col_idx, col in enumerate(df_final.columns):
+        # Write data rows
+        for c_idx, col in enumerate(df_final.columns):
             if col == "Final Grade":
                 fmt = final_fmt
             elif col.startswith("Average "):
@@ -170,8 +142,8 @@ def process_data(df, teacher, subject, course, level):
             else:
                 fmt = b_fmt
             for row in range(len(df_final)):
-                val = df_final.iloc[row, col_idx]
-                ws.write(7 + row, col_idx,
+                val = df_final.iloc[row, c_idx]
+                ws.write(7 + row, c_idx,
                          "" if pd.isna(val) else val,
                          fmt)
 
@@ -196,16 +168,15 @@ def main():
         1. **Ensure Schoology is set to English**  
         2. Navigate to the **course** you want to export  
         3. Click on **Gradebook**  
-        4. Click the **three dots** on the top-right corner and select **Export**  
+        4. Click the **three dots** and select **Export**  
         5. Choose **Gradebook as CSV**  
-        6. **Upload** that CSV file to this program  
-        7. Fill in the required fields  
-        8. Click **Download Organized Gradebook (Excel)**  
-        9. 🎉 **Enjoy!**
+        6. **Upload** that CSV here  
+        7. Fill in the fields  
+        8. Click **Download Organized Gradebook (Excel)**
     """)
     st.title("Griffin CSV to Excel v2")
 
-    # ←— Make sure these are here BEFORE you call process_data()
+    # ← these must be defined before calling process_data()
     teacher = st.text_input("Enter teacher's name:")
     subject = st.text_input("Enter subject area:")
     course  = st.text_input("Enter class:")
