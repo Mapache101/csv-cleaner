@@ -1,89 +1,212 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import re
+import io
+import xlsxwriter
+from datetime import datetime
+import math
 
-st.set_page_config(layout="wide")
+# Define weights for categories
+weights = {
+    "Auto eval": 0.05,
+    "TO BE_SER": 0.05,
+    "TO DECIDE_DECIDIR": 0.05,
+    "TO DO_HACER": 0.40,
+    "TO KNOW_SABER": 0.45
+}
 
-def process_data(uploaded_file):
-    if not uploaded_file:
-        return None, None
+def custom_round(value):
+    return math.floor(value + 0.5)
 
-    # Read file
-    df = pd.read_excel(uploaded_file)
+def process_data(df, teacher, subject, course, level):
+    columns_to_drop = [
+        "Nombre de usuario", "Username", "Promedio General",
+        "Term1 - 2024", "Term1 - 2024 - AUTO EVAL TO BE_SER - Puntuación de categoría",
+        "Term1 - 2024 - TO BE_SER - Puntuación de categoría",
+        "Term1 - 2024 - TO DECIDE_DECIDIR - Puntuación de categoría",
+        "Term1 - 2024 - TO DO_HACER - Puntuación de categoría",
+        "Term1 - 2024 - TO KNOW_SABER - Puntuación de categoría",
+        "Unique User ID", "Overall", "2025", "Term1 - 2025",
+        "Term2- 2025", "Term3 - 2025"
+    ]
+    df.drop(columns=columns_to_drop, inplace=True, errors='ignore')
 
-    # Drop unnecessary rows and columns
-    df_cleaned = df.drop(index=0)
-    df_cleaned = df_cleaned.loc[:, ~df_cleaned.columns.str.contains('^Unnamed')]
+    df.replace("Missing", pd.NA, inplace=True)
 
-    # Rename first column
-    df_cleaned = df_cleaned.rename(columns={df_cleaned.columns[0]: "Student Name"})
+    exclusion_phrases = ["(Count in Grade)", "Category Score", "Ungraded"]
+    columns_info = []
+    general_columns = []
+    cols_to_remove = {"ID de usuario único", "ID de usuario unico"}
 
-    # Extract categories
-    categories = []
-    for col in df_cleaned.columns[1:]:
-        match = re.match(r"^(.*?) Q\d+", col)
-        if match:
-            cat = match.group(1).strip()
-            if cat not in categories:
-                categories.append(cat)
+    for i, col in enumerate(df.columns):
+        col = str(col)
+        if col in cols_to_remove or any(ph in col for ph in exclusion_phrases):
+            continue
 
-    # Dictionary of weights
-    weights = {
-        "TO BE_SER": 0.25,
-        "TO LEARN": 0.20,
-        "TO DO": 0.20,
-        "TO DECIDE": 0.30,
-        "AUTO EVAL": 0.05
-    }
+        if "Grading Category:" in col:
+            m_cat = re.search(r'Grading Category:\s*([^,)]+)', col)
+            category = m_cat.group(1).strip() if m_cat else "Unknown"
+            m_pts = re.search(r'Max Points:\s*([\d\.]+)', col)
+            max_pts = float(m_pts.group(1)) if m_pts else None
+            base_name = col.split('(')[0].strip()
+            new_name = f"{base_name} {category}".strip()
+            columns_info.append({
+                'original': col,
+                'new_name': new_name,
+                'category': category,
+                'seq_num': i,
+                'max_points': max_pts
+            })
+        else:
+            general_columns.append(col)
 
-    # Normalize weights dictionary for matching
-    normalized_weights = {k.strip().upper(): v for k, v in weights.items()}
+    name_terms = ["name", "first", "last"]
+    name_cols = [c for c in general_columns if any(t in c.lower() for t in name_terms)]
+    other_cols = [c for c in general_columns if c not in name_cols]
+    general_reordered = name_cols + other_cols
 
-    # Calculate raw averages and weighted scores
-    for cat in categories:
-        pattern = f"^{re.escape(cat)} Q\\d+"
-        cols = df_cleaned.filter(regex=pattern).columns
-        if not cols.empty:
-            raw_avg = df_cleaned[cols].astype(float).mean(axis=1)
-            df_cleaned[f"{cat} Average"] = raw_avg
+    sorted_coded = sorted(columns_info, key=lambda x: x['seq_num'])
+    new_order = general_reordered + [d['original'] for d in sorted_coded]
 
-            # Normalize the category name
-            cat_key = cat.strip().upper()
-            wt = normalized_weights.get(cat_key, None)
-            weighted = raw_avg * wt if wt is not None else raw_avg
-            avg_col = f"Average {cat}"
-            df_cleaned[avg_col] = weighted
+    df_cleaned = df[new_order].copy()
+    df_cleaned.rename({d['original']: d['new_name'] for d in columns_info}, axis=1, inplace=True)
 
-    # Calculate final average
-    weight_cols = [col for col in df_cleaned.columns if col.startswith("Average ")]
-    df_cleaned["Final Average"] = df_cleaned[weight_cols].sum(axis=1)
+    groups = {}
+    for d in columns_info:
+        groups.setdefault(d['category'], []).append(d)
+    group_order = sorted(groups, key=lambda cat: min(d['seq_num'] for d in groups[cat]))
 
-    # Prepare summary report
-    report_cols = ["Student Name"] + weight_cols + ["Final Average"]
-    df_report = df_cleaned[report_cols]
+    final_coded = []
+    for cat in group_order:
+        grp = sorted(groups[cat], key=lambda x: x['seq_num'])
+        names = [d['new_name'] for d in grp]
+        numeric = df_cleaned[names].apply(pd.to_numeric, errors='coerce')
 
-    return df_cleaned, df_report
+        earned_points = numeric.copy()
+        max_points_df = pd.DataFrame(index=df_cleaned.index)
 
-# Streamlit interface
-st.title("Rubric Evaluator with Weighting System")
+        for d in grp:
+            col = d['new_name']
+            max_pts = d['max_points']
+            max_points_df[col] = numeric[col].notna().astype(float) * max_pts
 
-uploaded_file = st.file_uploader("Upload rubric Excel file", type=["xlsx"])
+        sum_earned = earned_points.sum(axis=1, skipna=True)
+        sum_possible = max_points_df.sum(axis=1, skipna=True)
+        raw_avg = (sum_earned / sum_possible) * 100
+        raw_avg = raw_avg.fillna(0)
+
+        wt = weights.get(cat, None)
+        weighted = raw_avg * wt if wt is not None else raw_avg
+        avg_col = f"Average {cat}"
+        df_cleaned[avg_col] = weighted
+
+        final_coded.extend(names + [avg_col])
+
+    final_order = general_reordered + final_coded
+    df_final = df_cleaned[final_order]
+
+    def compute_final_grade(row):
+        total = 0
+        valid = False
+        for col in row.index:
+            if col.startswith("Average "):
+                val = row[col]
+                if pd.notna(val):
+                    total += val
+                    valid = True
+        return custom_round(total) if valid else pd.NA
+
+    df_final["Final Grade"] = df_final.apply(compute_final_grade, axis=1)
+
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter',
+                        engine_kwargs={'options': {'nan_inf_to_errors': True}}) as writer:
+        df_final.to_excel(writer, 'Sheet1', startrow=6, index=False)
+        wb = writer.book
+        ws = writer.sheets['Sheet1']
+
+        header_fmt = wb.add_format({
+            'bold': True,
+            'border': 1,
+            'rotation': 90,
+            'shrink': True,
+            'text_wrap': True
+        })
+        avg_hdr = wb.add_format({
+            'bold': True,
+            'border': 1,
+            'rotation': 90,
+            'shrink': True,
+            'text_wrap': True,
+            'bg_color': '#ADD8E6'
+        })
+        avg_data = wb.add_format({
+            'border': 1,
+            'bg_color': '#ADD8E6',
+            'num_format': '0'
+        })
+        final_fmt = wb.add_format({'bold': True, 'border': 1, 'bg_color': '#90EE90'})
+        b_fmt = wb.add_format({'border': 1})
+
+        ws.write('A1', "Teacher:", b_fmt); ws.write('B1', teacher, b_fmt)
+        ws.write('A2', "Subject:", b_fmt); ws.write('B2', subject, b_fmt)
+        ws.write('A3', "Class:", b_fmt);   ws.write('B3', course, b_fmt)
+        ws.write('A4', "Level:", b_fmt);   ws.write('B4', level, b_fmt)
+        ws.write('A5', datetime.now().strftime("%y-%m-%d"), b_fmt)
+
+        for idx, col in enumerate(df_final.columns):
+            fmt = header_fmt
+            if col.startswith("Average "):
+                fmt = avg_hdr
+            elif col == "Final Grade":
+                fmt = final_fmt
+            ws.write(6, idx, col, fmt)
+
+        avg_cols = {c for c in df_final.columns if c.startswith("Average ")}
+        for col_idx, col in enumerate(df_final.columns):
+            fmt = avg_data if col in avg_cols else final_fmt if col == "Final Grade" else b_fmt
+            for row_offset in range(len(df_final)):
+                val = df_final.iloc[row_offset, col_idx]
+                excel_row = 7 + row_offset
+                ws.write(excel_row, col_idx, "" if pd.isna(val) else val, fmt)
+
+        name_terms = ["name", "first", "last"]
+        for idx, col in enumerate(df_final.columns):
+            if any(t in col.lower() for t in name_terms):
+                ws.set_column(idx, idx, 25)
+            elif col.startswith("Average "):
+                ws.set_column(idx, idx, 7)
+            elif col == "Final Grade":
+                ws.set_column(idx, idx, 12)
+            else:
+                ws.set_column(idx, idx, 10)
+
+    return output
+
+# --- Streamlit App ---
+
+st.title("📊 Schoology Gradebook Analyzer")
+
+uploaded_file = st.file_uploader("Upload a Schoology Gradebook CSV", type="csv")
 
 if uploaded_file:
-    df_cleaned, df_report = process_data(uploaded_file)
+    df = pd.read_csv(uploaded_file)
 
-    if df_cleaned is not None:
-        st.subheader("Full Data with Raw and Weighted Averages")
-        st.dataframe(df_cleaned, use_container_width=True)
+    with st.form("form"):
+        st.subheader("Teacher/Class Info")
+        teacher = st.text_input("Teacher Name")
+        subject = st.text_input("Subject")
+        course = st.text_input("Class/Course Name")
+        level = st.text_input("Level or Grade")
+        submitted = st.form_submit_button("Generate Grade Report")
 
-        st.subheader("Summary Report (Weighted Averages)")
-        st.dataframe(df_report, use_container_width=True)
+    if submitted:
+        result = process_data(df, teacher, subject, course, level)
+        st.success("✅ Grade report generated!")
 
-        # Download button
         st.download_button(
-            label="Download Report as Excel",
-            data=df_report.to_excel(index=False, engine='openpyxl'),
-            file_name="summary_report.xlsx",
+            label="📥 Download Excel Report",
+            data=result.getvalue(),
+            file_name=f"{subject}_{course}_grades.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
