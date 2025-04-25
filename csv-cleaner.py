@@ -18,6 +18,11 @@ weights = {
 def custom_round(value):
     return math.floor(value + 0.5)
 
+def generate_unique_column_name(base_name, name_counts):
+    count = name_counts.get(base_name, 0) + 1
+    name_counts[base_name] = count
+    return f"{base_name} #{count}"
+
 def process_data(df, teacher, subject, course, level):
     columns_to_drop = [
         "Nombre de usuario", "Username", "Promedio General",
@@ -30,14 +35,15 @@ def process_data(df, teacher, subject, course, level):
         "Term2- 2025", "Term3 - 2025"
     ]
     df.drop(columns=columns_to_drop, inplace=True, errors='ignore')
-
     df.replace("Missing", pd.NA, inplace=True)
 
     exclusion_phrases = ["(Count in Grade)", "Category Score", "Ungraded"]
     columns_info = []
     general_columns = []
     cols_to_remove = {"ID de usuario único", "ID de usuario unico"}
+    name_counts = {}
 
+    renamed_columns = {}
     for i, col in enumerate(df.columns):
         col = str(col)
         if col in cols_to_remove or any(ph in col for ph in exclusion_phrases):
@@ -49,7 +55,8 @@ def process_data(df, teacher, subject, course, level):
             m_pts = re.search(r'Max Points:\s*([\d\.]+)', col)
             max_pts = float(m_pts.group(1)) if m_pts else None
             base_name = col.split('(')[0].strip()
-            new_name = f"{base_name} {category}".strip()
+            new_base = f"{base_name} {category}".strip()
+            new_name = generate_unique_column_name(new_base, name_counts)
             columns_info.append({
                 'original': col,
                 'new_name': new_name,
@@ -57,8 +64,11 @@ def process_data(df, teacher, subject, course, level):
                 'seq_num': i,
                 'max_points': max_pts
             })
+            renamed_columns[col] = new_name
         else:
             general_columns.append(col)
+
+    df.rename(columns=renamed_columns, inplace=True)
 
     name_terms = ["name", "first", "last"]
     name_cols = [c for c in general_columns if any(t in c.lower() for t in name_terms)]
@@ -66,10 +76,9 @@ def process_data(df, teacher, subject, course, level):
     general_reordered = name_cols + other_cols
 
     sorted_coded = sorted(columns_info, key=lambda x: x['seq_num'])
-    new_order = general_reordered + [d['original'] for d in sorted_coded]
+    new_order = general_reordered + [d['new_name'] for d in sorted_coded]
 
     df_cleaned = df[new_order].copy()
-    df_cleaned.rename({d['original']: d['new_name'] for d in columns_info}, axis=1, inplace=True)
 
     groups = {}
     for d in columns_info:
@@ -95,30 +104,17 @@ def process_data(df, teacher, subject, course, level):
         raw_avg = (sum_earned / sum_possible) * 100
         raw_avg = raw_avg.fillna(0)
 
-        
-        wt = None # Default to None
-        # Iterate through the keys in your weights dictionary
+        wt = None
         for key in weights:
-            # Compare the extracted category name (cat) with the dictionary key, ignoring case
             if cat.lower() == key.lower():
-                wt = weights[key] # If they match (case-insensitive), get the weight
-                break # Stop searching once found
-        # --- END REPLACEMENT ---
-
-        # Apply weight (this part remains the same, but wt should now be found correctly)
-        weighted = raw_avg * wt if wt is not None else raw_avg
-        # Optional: Add a warning if a weight is still not found
+                wt = weights[key]
+                break
         if wt is None:
-             print(f"Warning: No weight found for category '{cat}'. Using raw average.")
-             # Consider if you want 'weighted' to be 0 instead of raw_avg here:
-             # weighted = 0
+            print(f"Warning: No weight found for category '{cat}'. Using raw average.")
 
-        avg_col = f"Average {cat}"
-        df_cleaned[avg_col] = weighted
         weighted = raw_avg * wt if wt is not None else raw_avg
         avg_col = f"Average {cat}"
         df_cleaned[avg_col] = weighted
-
         final_coded.extend(names + [avg_col])
 
     final_order = general_reordered + final_coded
