@@ -1,27 +1,41 @@
-    # Compute category averages using LMS method: (Earned / Possible) * 100
-    final_coded = []
-    for cat in group_order:
-        grp = sorted(groups[cat], key=lambda x: x['seq_num'])
-        names = [d['new_name'] for d in grp]
-        numeric = df_cleaned[names].apply(lambda x: pd.to_numeric(x, errors='coerce'))
+def process_data(df, groups):
+    df_cleaned = df.copy()
+    output_columns = []
+    all_scores = []
 
-        # Create DataFrame of max points for each assignment
-        max_points = pd.DataFrame({d['new_name']: d['max_points'] for d in grp}, index=df_cleaned.index)
+    for group in groups:
+        category_name = group['category']
+        assignments = group['assignments']
+        max_points = group['max_points']
+        weight = group['weight']
+        avg_col = group['new_name']
 
-        # Only count grades that are not NaN (ignore ungraded assignments)
-        has_score = numeric.notna()
-        earned = numeric.where(has_score, 0)
-        possible = max_points.where(has_score, 0)
+        # Collect existing assignment columns
+        existing_assignments = [a for a in assignments if a in df_cleaned.columns]
 
-        # Sum points earned and possible per student
-        sum_earned = earned.sum(axis=1)
-        sum_possible = possible.sum(axis=1)
+        if not existing_assignments:
+            continue
 
-        # Compute raw average as (earned / possible) * 100
-        raw_category_average = sum_earned / sum_possible * 100
-        raw_category_average = raw_category_average.fillna(0)  # or keep as NaN if preferred
+        # Convert to numeric
+        df_cleaned[existing_assignments] = df_cleaned[existing_assignments].apply(pd.to_numeric, errors='coerce')
 
-        wt = next((w for k, w in weights.items() if k.lower() == cat.lower()), None)
-        avg_col = f"Average {cat}"
-        df_cleaned[avg_col] = raw_category_average * wt if wt is not None else raw_category_average
-        final_coded.extend(names + [avg_col])
+        # Calculate category total points (earned / max)
+        earned = df_cleaned[existing_assignments].sum(axis=1)
+        total_possible = sum([max_points[a] for a in existing_assignments if a in max_points and pd.notnull(df_cleaned[a]).any()])
+
+        if total_possible == 0:
+            df_cleaned[avg_col] = 0
+        else:
+            df_cleaned[avg_col] = (earned / total_possible) * 100
+
+        # Maintain column group structure: assignments + category average
+        output_columns.extend(existing_assignments + [avg_col])
+        all_scores.append((avg_col, weight))
+
+    # Weighted average of all category scores
+    total_weight = sum(w for _, w in all_scores)
+    if total_weight > 0:
+        df_cleaned['Weighted Average'] = sum(df_cleaned[col] * (w / total_weight) for col, w in all_scores)
+        output_columns.append('Weighted Average')
+
+    return df_cleaned[output_columns]
