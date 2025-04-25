@@ -95,7 +95,26 @@ def process_data(df, teacher, subject, course, level):
         raw_avg = (sum_earned / sum_possible) * 100
         raw_avg = raw_avg.fillna(0)
 
-        wt = weights.get(cat, None)
+        
+        wt = None # Default to None
+        # Iterate through the keys in your weights dictionary
+        for key in weights:
+            # Compare the extracted category name (cat) with the dictionary key, ignoring case
+            if cat.lower() == key.lower():
+                wt = weights[key] # If they match (case-insensitive), get the weight
+                break # Stop searching once found
+        # --- END REPLACEMENT ---
+
+        # Apply weight (this part remains the same, but wt should now be found correctly)
+        weighted = raw_avg * wt if wt is not None else raw_avg
+        # Optional: Add a warning if a weight is still not found
+        if wt is None:
+             print(f"Warning: No weight found for category '{cat}'. Using raw average.")
+             # Consider if you want 'weighted' to be 0 instead of raw_avg here:
+             # weighted = 0
+
+        avg_col = f"Average {cat}"
+        df_cleaned[avg_col] = weighted
         weighted = raw_avg * wt if wt is not None else raw_avg
         avg_col = f"Average {cat}"
         df_cleaned[avg_col] = weighted
