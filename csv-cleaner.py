@@ -18,16 +18,69 @@ weights = {
 def custom_round(value):
     return math.floor(value + 0.5)
 
-def process_data(df, teacher, subject, course, level):
+def create_single_trimester_gradebook(df, trimester_to_keep):
+    """
+    Filters the gradebook to keep only general student information and all
+    grade columns for a single, specified trimester, based on the pattern
+    provided.
+
+    Args:
+        df (pd.DataFrame): The original gradebook DataFrame.
+        trimester_to_keep (str): The trimester to keep (e.g., 'Term1', 'Term2', 'Term3').
+
+    Returns:
+        pd.DataFrame: A new DataFrame with only the specified trimester's columns.
+    """
+    # Define the general columns to always keep
+    general_columns = df.columns[:5].tolist()
+    
+    # Find the column index for the start of each trimester
+    trimester_start_indices = {}
+    for i, col in enumerate(df.columns):
+        if 'Term1' in col and 'Term1' not in trimester_start_indices:
+            trimester_start_indices['Term1'] = i
+        if 'Term2' in col and 'Term2' not in trimester_start_indices:
+            trimester_start_indices['Term2'] = i
+        if 'Term3' in col and 'Term3' not in trimester_start_indices:
+            trimester_start_indices['Term3'] = i
+
+    # Check if the selected trimester exists in the file
+    if trimester_to_keep not in trimester_start_indices:
+        st.error(f"Could not find a starting column for {trimester_to_keep}. Please check your file format.")
+        return None
+
+    # Get the start index for the selected trimester's grades
+    start_index = trimester_start_indices[trimester_to_keep]
+    
+    # Determine the end index of the trimester's grade columns
+    end_index = None
+    if trimester_to_keep == 'Term1' and 'Term2' in trimester_start_indices:
+        end_index = trimester_start_indices['Term2']
+    elif trimester_to_keep == 'Term2' and 'Term3' in trimester_start_indices:
+        end_index = trimester_start_indices['Term3']
+    elif trimester_to_keep == 'Term3':
+        # If it's the last trimester, we go to the end of the DataFrame
+        end_index = len(df.columns)
+
+    if end_index is None:
+        # If no end column was found, it means this is the last term in the file
+        end_index = len(df.columns)
+
+    # Slice the DataFrame to get the columns for the selected trimester's grades
+    trimester_grade_columns = df.columns[start_index:end_index].tolist()
+    
+    # Combine general columns with the selected trimester's grade columns
+    columns_to_keep = general_columns + trimester_grade_columns
+            
+    # Create the new DataFrame with the filtered columns
+    filtered_df = df[columns_to_keep]
+
+    return filtered_df
+
+def process_data(df, teacher, subject, course, level, trimester_choice):
     columns_to_drop = [
         "Nombre de usuario", "Username", "Promedio General",
-        "Term1 - 2024", "Term1 - 2024 - AUTO EVAL TO BE_SER - Puntuación de categoría",
-        "Term1 - 2024 - TO BE_SER - Puntuación de categoría",
-        "Term1 - 2024 - TO DECIDE_DECIDIR - Puntuación de categoría",
-        "Term1 - 2024 - TO DO_HACER - Puntuación de categoría",
-        "Term1 - 2024 - TO KNOW_SABER - Puntuación de categoría",
-        "Unique User ID", "Overall", "2025", "Term1 - 2025",
-        "Term2- 2025", "Term3 - 2025"
+        "Unique User ID", "2025", "Term3 - 2025"
     ]
     df.drop(columns=columns_to_drop, inplace=True, errors='ignore')
 
@@ -80,41 +133,38 @@ def process_data(df, teacher, subject, course, level):
     for cat in group_order:
         grp = sorted(groups[cat], key=lambda x: x['seq_num'])
         names = [d['new_name'] for d in grp]
-        numeric = df_cleaned[names].apply(pd.to_numeric, errors='coerce')
-
-        earned_points = numeric.copy()
-        max_points_df = pd.DataFrame(index=df_cleaned.index)
-
-        for d in grp:
-            col = d['new_name']
-            max_pts = d['max_points']
-            max_points_df[col] = numeric[col].notna().astype(float) * max_pts
-
-        sum_earned = earned_points.sum(axis=1, skipna=True)
-        sum_possible = max_points_df.sum(axis=1, skipna=True)
-        raw_avg = (sum_earned / sum_possible) * 100
-        raw_avg = raw_avg.fillna(0)
-
         
-        wt = None # Default to None
-        # Iterate through the keys in your weights dictionary
+        # --- DYNAMIC LOGIC: Use pre-calculated category score based on trimester choice ---
+        category_score_col = f"{trimester_choice} - 2025 - {cat} - Category Score"
+        
+        raw_avg = pd.Series(dtype='float64')
+        if category_score_col in df.columns:
+            raw_avg = pd.to_numeric(df[category_score_col], errors='coerce')
+        else:
+            # Fallback for columns with no space
+            category_score_col_no_space = f"{trimester_choice}- 2025 - {cat} - Category Score"
+            if category_score_col_no_space in df.columns:
+                raw_avg = pd.to_numeric(df[category_score_col_no_space], errors='coerce')
+            else:
+                numeric = df_cleaned[names].apply(pd.to_numeric, errors='coerce')
+                sum_earned = numeric.sum(axis=1, skipna=True)
+                max_points_df = pd.DataFrame(index=df_cleaned.index)
+                for d in grp:
+                    col = d['new_name']
+                    max_pts = d['max_points']
+                    max_points_df[col] = numeric[col].notna().astype(float) * max_pts
+                sum_possible = max_points_df.sum(axis=1, skipna=True)
+                raw_avg = (sum_earned / sum_possible) * 100
+        
+        raw_avg = raw_avg.fillna(0)
+        # --- END DYNAMIC LOGIC ---
+            
+        wt = None
         for key in weights:
-            # Compare the extracted category name (cat) with the dictionary key, ignoring case
             if cat.lower() == key.lower():
-                wt = weights[key] # If they match (case-insensitive), get the weight
-                break # Stop searching once found
-        # --- END REPLACEMENT ---
-
-        # Apply weight (this part remains the same, but wt should now be found correctly)
-        weighted = raw_avg * wt if wt is not None else raw_avg
-        # Optional: Add a warning if a weight is still not found
-        if wt is None:
-             print(f"Warning: No weight found for category '{cat}'. Using raw average.")
-             # Consider if you want 'weighted' to be 0 instead of raw_avg here:
-             # weighted = 0
-
-        avg_col = f"Average {cat}"
-        df_cleaned[avg_col] = weighted
+                wt = weights[key]
+                break
+        
         weighted = raw_avg * wt if wt is not None else raw_avg
         avg_col = f"Average {cat}"
         df_cleaned[avg_col] = weighted
@@ -124,18 +174,17 @@ def process_data(df, teacher, subject, course, level):
     final_order = general_reordered + final_coded
     df_final = df_cleaned[final_order]
 
-    def compute_final_grade(row):
-        total = 0
-        valid = False
-        for col in row.index:
-            if col.startswith("Average "):
-                val = row[col]
-                if pd.notna(val):
-                    total += val
-                    valid = True
-        return custom_round(total) if valid else pd.NA
+    # --- DYNAMIC LOGIC: Use a dynamic column for final grade ---
+    final_grade_col = f"{trimester_choice} - 2025"
+    final_grade_col_no_space = f"{trimester_choice}- 2025"
 
-    df_final["Final Grade"] = df_final.apply(compute_final_grade, axis=1)
+    if final_grade_col in df.columns:
+        df_final["Final Grade"] = df[final_grade_col]
+    elif final_grade_col_no_space in df.columns:
+        df_final["Final Grade"] = df[final_grade_col_no_space]
+    else:
+        df_final["Final Grade"] = pd.NA
+    # --- END DYNAMIC LOGIC ---
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter',
@@ -169,8 +218,8 @@ def process_data(df, teacher, subject, course, level):
 
         ws.write('A1', "Teacher:", b_fmt); ws.write('B1', teacher, b_fmt)
         ws.write('A2', "Subject:", b_fmt); ws.write('B2', subject, b_fmt)
-        ws.write('A3', "Class:", b_fmt);   ws.write('B3', course, b_fmt)
-        ws.write('A4', "Level:", b_fmt);   ws.write('B4', level, b_fmt)
+        ws.write('A3', "Class:", b_fmt);    ws.write('B3', course, b_fmt)
+        ws.write('A4', "Level:", b_fmt);    ws.write('B4', level, b_fmt)
         ws.write('A5', datetime.now().strftime("%y-%m-%d"), b_fmt)
 
         for idx, col in enumerate(df_final.columns):
@@ -210,7 +259,15 @@ uploaded_file = st.file_uploader("Upload a Schoology Gradebook CSV", type="csv")
 
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
-
+    
+    st.success("File uploaded successfully!")
+    st.subheader("Select Trimester to Process")
+    
+    trimester_choice = st.selectbox(
+        "Choose the trimester you want to process:",
+        ("Term1", "Term2", "Term3")
+    )
+    
     with st.form("form"):
         st.subheader("Teacher/Class Info")
         teacher = st.text_input("Teacher Name")
@@ -220,12 +277,15 @@ if uploaded_file:
         submitted = st.form_submit_button("Generate Grade Report")
 
     if submitted:
-        result = process_data(df, teacher, subject, course, level)
-        st.success("✅ Grade report generated!")
+        filtered_df = create_single_trimester_gradebook(df, trimester_choice)
 
-        st.download_button(
-            label="📥 Download Excel Report",
-            data=result.getvalue(),
-            file_name=f"{subject}_{course}_grades.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+        if filtered_df is not None:
+            result = process_data(filtered_df, teacher, subject, course, level, trimester_choice)
+            st.success("✅ Grade report generated!")
+
+            st.download_button(
+                label="📥 Download Excel Report",
+                data=result.getvalue(),
+                file_name=f"{subject}_{course}_{trimester_choice}_grades.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
