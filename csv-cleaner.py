@@ -105,12 +105,32 @@ def process_data(df, teacher, subject, course, level, trimester_choice):
     name_terms = ["name", "first", "last"]
     name_cols = [c for c in general_columns if any(t in c.lower() for t in name_terms)]
     other_cols = [c for c in general_columns if c not in name_cols]
-    general_reordered = name_cols + other_cols
+    
+    # --- CHANGE: Rename 'First Name' and 'Last Name' columns ---
+    general_reordered = []
+    for col in name_cols:
+        if col.lower() == 'first name':
+            general_reordered.append('Primer Nombre')
+        elif col.lower() == 'last name':
+            general_reordered.append('Apellidos')
+        else:
+            general_reordered.append(col)
+            
+    general_reordered += other_cols
+    # --- CHANGE ---
 
     sorted_coded = sorted(columns_info, key=lambda x: x['seq_num'])
     new_order = general_reordered + [d['original'] for d in sorted_coded]
-
-    df_cleaned = df[new_order].copy()
+    
+    # Create a dictionary for renaming the original DataFrame columns
+    rename_dict = {
+        'First Name': 'Primer Nombre',
+        'Last Name': 'Apellidos'
+    }
+    
+    df_cleaned = df.copy()
+    df_cleaned.rename(columns=rename_dict, inplace=True, errors='ignore')
+    
     df_cleaned.rename({d['original']: d['new_name'] for d in columns_info}, axis=1, inplace=True)
 
     groups = {}
@@ -205,10 +225,10 @@ def process_data(df, teacher, subject, course, level, trimester_choice):
         final_fmt = wb.add_format({'bold': True, 'border': 1, 'bg_color': '#90EE90'})
         b_fmt = wb.add_format({'border': 1})
 
-        ws.write('A1', "Teacher:", b_fmt); ws.write('B1', teacher, b_fmt)
-        ws.write('A2', "Subject:", b_fmt); ws.write('B2', subject, b_fmt)
-        ws.write('A3', "Class:", b_fmt);    ws.write('B3', course, b_fmt)
-        ws.write('A4', "Level:", b_fmt);    ws.write('B4', level, b_fmt)
+        ws.write('A1', "Profesor/a:", b_fmt); ws.write('B1', teacher, b_fmt)
+        ws.write('A2', "Asignatura:", b_fmt); ws.write('B2', subject, b_fmt)
+        ws.write('A3', "Clase:", b_fmt);    ws.write('B3', course, b_fmt)
+        ws.write('A4', "Nivel:", b_fmt);    ws.write('B4', level, b_fmt)
         ws.write('A5', datetime.now().strftime("%y-%m-%d"), b_fmt)
 
         for idx, col in enumerate(df_final.columns):
