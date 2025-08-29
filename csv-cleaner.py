@@ -1,3 +1,82 @@
+import streamlit as st
+import pandas as pd
+import re
+import io
+import xlsxwriter
+from datetime import datetime
+import math
+
+# Define weights for categories
+weights = {
+    "Auto eval": 0.05,
+    "TO BE_SER": 0.05,
+    "TO DECIDE_DECIDIR": 0.05,
+    "TO DO_HACER": 0.40,
+    "TO KNOW_SABER": 0.45
+}
+
+def custom_round(value):
+    return math.floor(value + 0.5)
+
+def create_single_trimester_gradebook(df, trimester_to_keep):
+    """
+    Filters the gradebook to keep only general student information and all
+    grade columns for a single, specified trimester, based on the pattern
+    provided.
+
+    Args:
+        df (pd.DataFrame): The original gradebook DataFrame.
+        trimester_to_keep (str): The trimester to keep (e.g., 'Term1', 'Term2', 'Term3').
+
+    Returns:
+        pd.DataFrame: A new DataFrame with only the specified trimester's columns.
+    """
+    # Define the general columns to always keep
+    general_columns = df.columns[:5].tolist()
+    
+    # Find the column index for the start of each trimester
+    trimester_start_indices = {}
+    for i, col in enumerate(df.columns):
+        if 'Term1' in col and 'Term1' not in trimester_start_indices:
+            trimester_start_indices['Term1'] = i
+        if 'Term2' in col and 'Term2' not in trimester_start_indices:
+            trimester_start_indices['Term2'] = i
+        if 'Term3' in col and 'Term3' not in trimester_start_indices:
+            trimester_start_indices['Term3'] = i
+
+    # Check if the selected trimester exists in the file
+    if trimester_to_keep not in trimester_start_indices:
+        st.error(f"Could not find a starting column for {trimester_to_keep}. Please check your file format.")
+        return None
+
+    # Get the start index for the selected trimester's grades
+    start_index = trimester_start_indices[trimester_to_keep]
+    
+    # Determine the end index of the trimester's grade columns
+    end_index = None
+    if trimester_to_keep == 'Term1' and 'Term2' in trimester_start_indices:
+        end_index = trimester_start_indices['Term2']
+    elif trimester_to_keep == 'Term2' and 'Term3' in trimester_start_indices:
+        end_index = trimester_start_indices['Term3']
+    elif trimester_to_keep == 'Term3':
+        # If it's the last trimester, we go to the end of the DataFrame
+        end_index = len(df.columns)
+
+    if end_index is None:
+        # If no end column was found, it means this is the last term in the file
+        end_index = len(df.columns)
+
+    # Slice the DataFrame to get the columns for the selected trimester's grades
+    trimester_grade_columns = df.columns[start_index:end_index].tolist()
+    
+    # Combine general columns with the selected trimester's grade columns
+    columns_to_keep = general_columns + trimester_grade_columns
+            
+    # Create the new DataFrame with the filtered columns
+    filtered_df = df[columns_to_keep]
+
+    return filtered_df
+
 def process_data(df, teacher, subject, course, level, trimester_choice):
     columns_to_drop = [
         "Nombre de usuario", "Username", "Promedio General",
@@ -38,33 +117,14 @@ def process_data(df, teacher, subject, course, level, trimester_choice):
     name_cols = [c for c in general_columns if any(t in c.lower() for t in name_terms)]
     other_cols = [c for c in general_columns if c not in name_cols]
     
-    # --- PROPOSED CHANGE: Rename 'First Name' and 'Last Name' columns ---
-    general_reordered = []
-    for col in name_cols:
-        if col.lower() == 'first name':
-            general_reordered.append('Primer Nombre')
-        elif col.lower() == 'last name':
-            general_reordered.append('Apellidos')
-        else:
-            general_reordered.append(col)
-            
-    general_reordered += other_cols
-    # --- END PROPOSED CHANGE ---
-
+    general_reordered = name_cols + other_cols
+    
     sorted_coded = sorted(columns_info, key=lambda x: x['seq_num'])
     new_order = general_reordered + [d['original'] for d in sorted_coded]
-    
-    # Create a dictionary for renaming the original DataFrame columns
-    rename_dict = {
-        'First Name': 'Primer Nombre',
-        'Last Name': 'Apellidos'
-    }
-    
-    df_cleaned = df.copy()
-    df_cleaned.rename(columns=rename_dict, inplace=True, errors='ignore')
-    
-    df_cleaned.rename({d['original']: d['new_name'] for d in columns_info}, axis=1, inplace=True)
 
+    df_cleaned = df[new_order].copy()
+    df_cleaned.rename({d['original']: d['new_name'] for d in columns_info}, axis=1, inplace=True)
+    
     groups = {}
     for d in columns_info:
         groups.setdefault(d['category'], []).append(d)
@@ -112,82 +172,28 @@ def process_data(df, teacher, subject, course, level, trimester_choice):
 
         final_coded.extend(names + [avg_col])
 
-    final_order = general_reordered + final_coded
-    df_final = df_cleaned[final_order]
-
-    # --- DYNAMIC LOGIC: Use a dynamic column for final grade ---
-    final_grade_col = f"{trimester_choice} - 2025"
-    final_grade_col_no_space = f"{trimester_choice}- 2025"
-
-    if final_grade_col in df.columns:
-        df_final["Final Grade"] = df[final_grade_col]
-    elif final_grade_col_no_space in df.columns:
-        df_final["Final Grade"] = df[final_grade_col_no_space]
-    else:
-        df_final["Final Grade"] = pd.NA
-    # --- END DYNAMIC LOGIC ---
-
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter',
-                        engine_kwargs={'options': {'nan_inf_to_errors': True}}) as writer:
-        df_final.to_excel(writer, 'Sheet1', startrow=6, index=False)
-        wb = writer.book
-        ws = writer.sheets['Sheet1']
-
-        header_fmt = wb.add_format({
-            'bold': True,
-            'border': 1,
-            'rotation': 90,
-            'shrink': True,
-            'text_wrap': True
-        })
-        avg_hdr = wb.add_format({
-            'bold': True,
-            'border': 1,
-            'rotation': 90,
-            'shrink': True,
-            'text_wrap': True,
-            'bg_color': '#ADD8E6'
-        })
-        avg_data = wb.add_format({
-            'border': 1,
-            'bg_color': '#ADD8E6',
-            'num_format': '0'
-        })
-        final_fmt = wb.add_format({'bold': True, 'border': 1, 'bg_color': '#90EE90'})
-        b_fmt = wb.add_format({'border': 1})
-
-        ws.write('A1', "Profesor/a:", b_fmt); ws.write('B1', teacher, b_fmt)
-        ws.write('A2', "Asignatura:", b_fmt); ws.write('B2', subject, b_fmt)
-        ws.write('A3', "Clase:", b_fmt);    ws.write('B3', course, b_fmt)
-        ws.write('A4', "Nivel:", b_fmt);    ws.write('B4', level, b_fmt)
-        ws.write('A5', datetime.now().strftime("%y-%m-%d"), b_fmt)
-
-        for idx, col in enumerate(df_final.columns):
-            fmt = header_fmt
-            if col.startswith("Average "):
-                fmt = avg_hdr
-            elif col == "Final Grade":
-                fmt = final_fmt
-            ws.write(6, idx, col, fmt)
-
-        avg_cols = {c for c in df_final.columns if c.startswith("Average ")}
-        for col_idx, col in enumerate(df_final.columns):
-            fmt = avg_data if col in avg_cols else final_fmt if col == "Final Grade" else b_fmt
-            for row_offset in range(len(df_final)):
-                val = df_final.iloc[row_offset, col_idx]
-                excel_row = 7 + row_offset
-                ws.write(excel_row, col_idx, "" if pd.isna(val) else val, fmt)
-
-        name_terms = ["name", "first", "last"]
-        for idx, col in enumerate(df_final.columns):
-            if any(t in col.lower() for t in name_terms):
-                ws.set_column(idx, idx, 25)
-            elif col.startswith("Average "):
-                ws.set_column(idx, idx, 7)
-            elif col == "Final Grade":
-                ws.set_column(idx, idx, 12)
-            else:
-                ws.set_column(idx, idx, 10)
-
-    return output
+    # --- Renaming and Reordering the columns for the final report ---
+    rename_dict = {
+        'First Name': 'Primer Nombre',
+        'Last Name': 'Apellidos',
+        'Overall': 'Promedio Anual',
+        f'{trimester_choice}- 2025': 'Promedio Trimestral',
+        f'{trimester_choice} - 2025': 'Promedio Trimestral'
+    }
+    
+    # Check for both naming conventions and rename accordingly
+    trimester_col_to_rename = None
+    if f'{trimester_choice}- 2025' in df.columns:
+        trimester_col_to_rename = f'{trimester_choice}- 2025'
+    elif f'{trimester_choice} - 2025' in df.columns:
+        trimester_col_to_rename = f'{trimester_choice} - 2025'
+    
+    df_final = df_cleaned.copy()
+    if 'First Name' in df_final.columns:
+        df_final.rename(columns={'First Name': 'Primer Nombre'}, inplace=True)
+    if 'Last Name' in df_final.columns:
+        df_final.rename(columns={'Last Name': 'Apellidos'}, inplace=True)
+    if 'Overall' in df_final.columns:
+        df_final.rename(columns={'Overall': 'Promedio Anual'}, inplace=True)
+    if trimester_col_to_rename:
+        df_
