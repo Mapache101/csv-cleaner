@@ -19,18 +19,7 @@ def custom_round(value):
     return math.floor(value + 0.5)
 
 def create_single_trimester_gradebook(df, trimester_to_keep):
-    """
-    Filters the gradebook to keep only general student information and all
-    grade columns for a single, specified trimester, based on the pattern
-    provided.
 
-    Args:
-        df (pd.DataFrame): The original gradebook DataFrame.
-        trimester_to_keep (str): The trimester to keep (e.g., 'Term1', 'Term2', 'Term3').
-
-    Returns:
-        pd.DataFrame: A new DataFrame with only the specified trimester's columns.
-    """
     # Define the general columns to always keep
     general_columns = df.columns[:5].tolist()
     
