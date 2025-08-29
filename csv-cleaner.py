@@ -1,71 +1,3 @@
-import streamlit as st
-import pandas as pd
-import re
-import io
-import xlsxwriter
-from datetime import datetime
-import math
-
-# Define weights for categories
-weights = {
-    "Auto eval": 0.05,
-    "TO BE_SER": 0.05,
-    "TO DECIDE_DECIDIR": 0.05,
-    "TO DO_HACER": 0.40,
-    "TO KNOW_SABER": 0.45
-}
-
-def custom_round(value):
-    return math.floor(value + 0.5)
-
-def create_single_trimester_gradebook(df, trimester_to_keep):
-
-    # Define the general columns to always keep
-    general_columns = df.columns[:5].tolist()
-    
-    # Find the column index for the start of each trimester
-    trimester_start_indices = {}
-    for i, col in enumerate(df.columns):
-        if 'Term1' in col and 'Term1' not in trimester_start_indices:
-            trimester_start_indices['Term1'] = i
-        if 'Term2' in col and 'Term2' not in trimester_start_indices:
-            trimester_start_indices['Term2'] = i
-        if 'Term3' in col and 'Term3' not in trimester_start_indices:
-            trimester_start_indices['Term3'] = i
-
-    # Check if the selected trimester exists in the file
-    if trimester_to_keep not in trimester_start_indices:
-        st.error(f"Could not find a starting column for {trimester_to_keep}. Please check your file format.")
-        return None
-
-    # Get the start index for the selected trimester's grades
-    start_index = trimester_start_indices[trimester_to_keep]
-    
-    # Determine the end index of the trimester's grade columns
-    end_index = None
-    if trimester_to_keep == 'Term1' and 'Term2' in trimester_start_indices:
-        end_index = trimester_start_indices['Term2']
-    elif trimester_to_keep == 'Term2' and 'Term3' in trimester_start_indices:
-        end_index = trimester_start_indices['Term3']
-    elif trimester_to_keep == 'Term3':
-        # If it's the last trimester, we go to the end of the DataFrame
-        end_index = len(df.columns)
-
-    if end_index is None:
-        # If no end column was found, it means this is the last term in the file
-        end_index = len(df.columns)
-
-    # Slice the DataFrame to get the columns for the selected trimester's grades
-    trimester_grade_columns = df.columns[start_index:end_index].tolist()
-    
-    # Combine general columns with the selected trimester's grade columns
-    columns_to_keep = general_columns + trimester_grade_columns
-            
-    # Create the new DataFrame with the filtered columns
-    filtered_df = df[columns_to_keep]
-
-    return filtered_df
-
 def process_data(df, teacher, subject, course, level, trimester_choice):
     columns_to_drop = [
         "Nombre de usuario", "Username", "Promedio General",
@@ -106,30 +38,32 @@ def process_data(df, teacher, subject, course, level, trimester_choice):
     name_cols = [c for c in general_columns if any(t in c.lower() for t in name_terms)]
     other_cols = [c for c in general_columns if c not in name_cols]
     
-    general_reordered = name_cols + other_cols
-    
+    # --- PROPOSED CHANGE: Rename 'First Name' and 'Last Name' columns ---
+    general_reordered = []
+    for col in name_cols:
+        if col.lower() == 'first name':
+            general_reordered.append('Primer Nombre')
+        elif col.lower() == 'last name':
+            general_reordered.append('Apellidos')
+        else:
+            general_reordered.append(col)
+            
+    general_reordered += other_cols
+    # --- END PROPOSED CHANGE ---
+
     sorted_coded = sorted(columns_info, key=lambda x: x['seq_num'])
     new_order = general_reordered + [d['original'] for d in sorted_coded]
-
-    df_cleaned = df[new_order].copy()
-    df_cleaned.rename({d['original']: d['new_name'] for d in columns_info}, axis=1, inplace=True)
-
-    # --- PROPOSED CHANGES: Rename columns and reorder for final output ---
+    
+    # Create a dictionary for renaming the original DataFrame columns
     rename_dict = {
         'First Name': 'Primer Nombre',
-        'Last Name': 'Apellidos',
-        'Overall': 'Promedio Anual',
-        f'{trimester_choice}- 2025': 'Promedio Trimestral',
-        f'{trimester_choice} - 2025': 'Promedio Trimestral'
+        'Last Name': 'Apellidos'
     }
-    df_final = df_cleaned.rename(columns=rename_dict, errors='ignore').copy()
     
-    # Re-order the columns for the final output to match your request
-    first_cols = ['Primer Nombre', 'Apellidos', 'Promedio Anual', 'Promedio Trimestral']
+    df_cleaned = df.copy()
+    df_cleaned.rename(columns=rename_dict, inplace=True, errors='ignore')
     
-    df_final_cols = first_cols + [col for col in df_final.columns if col not in first_cols]
-    df_final = df_final[df_final_cols]
-    # --- END PROPOSED CHANGES ---
+    df_cleaned.rename({d['original']: d['new_name'] for d in columns_info}, axis=1, inplace=True)
 
     groups = {}
     for d in columns_info:
@@ -174,33 +108,24 @@ def process_data(df, teacher, subject, course, level, trimester_choice):
         
         weighted = raw_avg * wt if wt is not None else raw_avg
         avg_col = f"Average {cat}"
-        df_final[avg_col] = weighted
+        df_cleaned[avg_col] = weighted
 
         final_coded.extend(names + [avg_col])
 
-    final_order = df_final.columns.tolist()
-    
-    # Now we need to make sure the final order includes the renamed columns
-    # We'll use the final_order from before and replace the old names with new ones
-    final_order_new = ['Primer Nombre', 'Apellidos']
-    # If 'Overall' is in the original columns, we add its new name
-    if 'Overall' in df.columns:
-        final_order_new.append('Promedio Anual')
-    # If the trimester column is in the original columns, we add its new name
-    trimester_col = f'{trimester_choice} - 2025'
-    if trimester_col in df.columns:
-        final_order_new.append('Promedio Trimestral')
-    
-    # Add all other columns in their original order
-    for col in final_order:
-        if col not in ['First Name', 'Last Name', 'Overall', trimester_col, f'{trimester_choice}- 2025', 'Final Grade']:
-            final_order_new.append(col)
-            
-    final_order_new.append('Final Grade')
-    
-    df_final = df_final[final_order_new]
+    final_order = general_reordered + final_coded
+    df_final = df_cleaned[final_order]
 
-    # ... (rest of the code for writing the Excel file is unchanged)
+    # --- DYNAMIC LOGIC: Use a dynamic column for final grade ---
+    final_grade_col = f"{trimester_choice} - 2025"
+    final_grade_col_no_space = f"{trimester_choice}- 2025"
+
+    if final_grade_col in df.columns:
+        df_final["Final Grade"] = df[final_grade_col]
+    elif final_grade_col_no_space in df.columns:
+        df_final["Final Grade"] = df[final_grade_col_no_space]
+    else:
+        df_final["Final Grade"] = pd.NA
+    # --- END DYNAMIC LOGIC ---
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter',
@@ -266,43 +191,3 @@ def process_data(df, teacher, subject, course, level, trimester_choice):
                 ws.set_column(idx, idx, 10)
 
     return output
-
-
-# --- Streamlit App ---
-
-st.title("📊 Schoology Gradebook Analyzer")
-
-uploaded_file = st.file_uploader("Upload a Schoology Gradebook CSV", type="csv")
-
-if uploaded_file:
-    df = pd.read_csv(uploaded_file)
-    
-    st.success("File uploaded successfully!")
-    st.subheader("Select Trimester to Process")
-    
-    trimester_choice = st.selectbox(
-        "Choose the trimester you want to process:",
-        ("Term1", "Term2", "Term3")
-    )
-    
-    with st.form("form"):
-        st.subheader("Teacher/Class Info")
-        teacher = st.text_input("Teacher Name")
-        subject = st.text_input("Subject")
-        course = st.text_input("Class/Course Name")
-        level = st.text_input("Level or Grade")
-        submitted = st.form_submit_button("Generate Grade Report")
-
-    if submitted:
-        filtered_df = create_single_trimester_gradebook(df, trimester_choice)
-
-        if filtered_df is not None:
-            result = process_data(filtered_df, teacher, subject, course, level, trimester_choice)
-            st.success("✅ Grade report generated!")
-
-            st.download_button(
-                label="📥 Download Excel Report",
-                data=result.getvalue(),
-                file_name=f"{subject}_{course}_{trimester_choice}_grades.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
