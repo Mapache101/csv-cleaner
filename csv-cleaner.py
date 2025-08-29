@@ -105,13 +105,31 @@ def process_data(df, teacher, subject, course, level, trimester_choice):
     name_terms = ["name", "first", "last"]
     name_cols = [c for c in general_columns if any(t in c.lower() for t in name_terms)]
     other_cols = [c for c in general_columns if c not in name_cols]
+    
     general_reordered = name_cols + other_cols
-
+    
     sorted_coded = sorted(columns_info, key=lambda x: x['seq_num'])
     new_order = general_reordered + [d['original'] for d in sorted_coded]
 
     df_cleaned = df[new_order].copy()
     df_cleaned.rename({d['original']: d['new_name'] for d in columns_info}, axis=1, inplace=True)
+
+    # --- PROPOSED CHANGES: Rename columns and reorder for final output ---
+    rename_dict = {
+        'First Name': 'Primer Nombre',
+        'Last Name': 'Apellidos',
+        'Overall': 'Promedio Anual',
+        f'{trimester_choice}- 2025': 'Promedio Trimestral',
+        f'{trimester_choice} - 2025': 'Promedio Trimestral'
+    }
+    df_final = df_cleaned.rename(columns=rename_dict, errors='ignore').copy()
+    
+    # Re-order the columns for the final output to match your request
+    first_cols = ['Primer Nombre', 'Apellidos', 'Promedio Anual', 'Promedio Trimestral']
+    
+    df_final_cols = first_cols + [col for col in df_final.columns if col not in first_cols]
+    df_final = df_final[df_final_cols]
+    # --- END PROPOSED CHANGES ---
 
     groups = {}
     for d in columns_info:
@@ -156,24 +174,33 @@ def process_data(df, teacher, subject, course, level, trimester_choice):
         
         weighted = raw_avg * wt if wt is not None else raw_avg
         avg_col = f"Average {cat}"
-        df_cleaned[avg_col] = weighted
+        df_final[avg_col] = weighted
 
         final_coded.extend(names + [avg_col])
 
-    final_order = general_reordered + final_coded
-    df_final = df_cleaned[final_order]
+    final_order = df_final.columns.tolist()
+    
+    # Now we need to make sure the final order includes the renamed columns
+    # We'll use the final_order from before and replace the old names with new ones
+    final_order_new = ['Primer Nombre', 'Apellidos']
+    # If 'Overall' is in the original columns, we add its new name
+    if 'Overall' in df.columns:
+        final_order_new.append('Promedio Anual')
+    # If the trimester column is in the original columns, we add its new name
+    trimester_col = f'{trimester_choice} - 2025'
+    if trimester_col in df.columns:
+        final_order_new.append('Promedio Trimestral')
+    
+    # Add all other columns in their original order
+    for col in final_order:
+        if col not in ['First Name', 'Last Name', 'Overall', trimester_col, f'{trimester_choice}- 2025', 'Final Grade']:
+            final_order_new.append(col)
+            
+    final_order_new.append('Final Grade')
+    
+    df_final = df_final[final_order_new]
 
-    # --- DYNAMIC LOGIC: Use a dynamic column for final grade ---
-    final_grade_col = f"{trimester_choice} - 2025"
-    final_grade_col_no_space = f"{trimester_choice}- 2025"
-
-    if final_grade_col in df.columns:
-        df_final["Final Grade"] = df[final_grade_col]
-    elif final_grade_col_no_space in df.columns:
-        df_final["Final Grade"] = df[final_grade_col_no_space]
-    else:
-        df_final["Final Grade"] = pd.NA
-    # --- END DYNAMIC LOGIC ---
+    # ... (rest of the code for writing the Excel file is unchanged)
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter',
@@ -239,6 +266,7 @@ def process_data(df, teacher, subject, course, level, trimester_choice):
                 ws.set_column(idx, idx, 10)
 
     return output
+
 
 # --- Streamlit App ---
 
