@@ -113,6 +113,8 @@ def process_data(df, teacher, subject, course, level, trimester_choice):
             general_reordered.append('Primer Nombre')
         elif col.lower() == 'last name':
             general_reordered.append('Apellidos')
+        elif col.lower() == 'Overall':
+            general_reordered.append('Promedio Anual')
         else:
             general_reordered.append(col)
             
