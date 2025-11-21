@@ -67,6 +67,19 @@ def create_single_trimester_gradebook(df, trimester_to_keep):
     return filtered_df
 
 def process_data(df, teacher, subject, course, level, trimester_choice):
+    
+    # --- STEP 1: PRESERVE FINAL GRADE FROM ORIGINAL CSV ---
+    # We extract the final grade column immediately before any dropping happens
+    final_grade_series = None
+    target_col = f"{trimester_choice} - 2025"
+    target_col_alt = f"{trimester_choice}- 2025" # Handle potential spacing differences
+
+    if target_col in df.columns:
+        final_grade_series = df[target_col].copy()
+    elif target_col_alt in df.columns:
+        final_grade_series = df[target_col_alt].copy()
+    # ------------------------------------------------------
+
     columns_to_drop = [
         "Nombre de usuario", "Username", "Promedio General",
         "Unique User ID", "2025", "Term3 - 2025"
@@ -105,34 +118,12 @@ def process_data(df, teacher, subject, course, level, trimester_choice):
     name_terms = ["name", "first", "last"]
     name_cols = [c for c in general_columns if any(t in c.lower() for t in name_terms)]
     other_cols = [c for c in general_columns if c not in name_cols]
-    
-    # --- CHANGE: Rename 'First Name' and 'Last Name' columns ---
-    general_reordered = []
-    for col in name_cols:
-        if col.lower() == 'first name':
-            general_reordered.append('Primer Nombre')
-        elif col.lower() == 'last name':
-            general_reordered.append('Apellidos')
-        elif col.lower() == 'Overall':
-            general_reordered.append('Promedio Anual')
-        else:
-            general_reordered.append(col)
-            
-    general_reordered += other_cols
-    # --- CHANGE ---
+    general_reordered = name_cols + other_cols
 
     sorted_coded = sorted(columns_info, key=lambda x: x['seq_num'])
     new_order = general_reordered + [d['original'] for d in sorted_coded]
-    
-    # Create a dictionary for renaming the original DataFrame columns
-    rename_dict = {
-        'First Name': 'Primer Nombre',
-        'Last Name': 'Apellidos'
-    }
-    
-    df_cleaned = df.copy()
-    df_cleaned.rename(columns=rename_dict, inplace=True, errors='ignore')
-    
+
+    df_cleaned = df[new_order].copy()
     df_cleaned.rename({d['original']: d['new_name'] for d in columns_info}, axis=1, inplace=True)
 
     groups = {}
@@ -145,7 +136,7 @@ def process_data(df, teacher, subject, course, level, trimester_choice):
         grp = sorted(groups[cat], key=lambda x: x['seq_num'])
         names = [d['new_name'] for d in grp]
         
-        # --- DYNAMIC LOGIC: Use pre-calculated category score based on trimester choice ---
+        # Use pre-calculated category score based on trimester choice
         category_score_col = f"{trimester_choice} - 2025 - {cat} - Category Score"
         
         raw_avg = pd.Series(dtype='float64')
@@ -168,7 +159,6 @@ def process_data(df, teacher, subject, course, level, trimester_choice):
                 raw_avg = (sum_earned / sum_possible) * 100
         
         raw_avg = raw_avg.fillna(0)
-        # --- END DYNAMIC LOGIC ---
             
         wt = None
         for key in weights:
@@ -185,17 +175,12 @@ def process_data(df, teacher, subject, course, level, trimester_choice):
     final_order = general_reordered + final_coded
     df_final = df_cleaned[final_order]
 
-    # --- DYNAMIC LOGIC: Use a dynamic column for final grade ---
-    final_grade_col = f"{trimester_choice} - 2025"
-    final_grade_col_no_space = f"{trimester_choice}- 2025"
-
-    if final_grade_col in df.columns:
-        df_final["Final Grade"] = df[final_grade_col]
-    elif final_grade_col_no_space in df.columns:
-        df_final["Final Grade"] = df[final_grade_col_no_space]
+    # --- ASSIGN PRESERVED FINAL GRADE ---
+    if final_grade_series is not None:
+        df_final["Final Grade"] = final_grade_series
     else:
         df_final["Final Grade"] = pd.NA
-    # --- END DYNAMIC LOGIC ---
+    # -------------------------------------
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter',
@@ -227,10 +212,10 @@ def process_data(df, teacher, subject, course, level, trimester_choice):
         final_fmt = wb.add_format({'bold': True, 'border': 1, 'bg_color': '#90EE90'})
         b_fmt = wb.add_format({'border': 1})
 
-        ws.write('A1', "Profesor/a:", b_fmt); ws.write('B1', teacher, b_fmt)
-        ws.write('A2', "Asignatura:", b_fmt); ws.write('B2', subject, b_fmt)
-        ws.write('A3', "Clase:", b_fmt);    ws.write('B3', course, b_fmt)
-        ws.write('A4', "Nivel:", b_fmt);    ws.write('B4', level, b_fmt)
+        ws.write('A1', "Teacher:", b_fmt); ws.write('B1', teacher, b_fmt)
+        ws.write('A2', "Subject:", b_fmt); ws.write('B2', subject, b_fmt)
+        ws.write('A3', "Class:", b_fmt);    ws.write('B3', course, b_fmt)
+        ws.write('A4', "Level:", b_fmt);    ws.write('B4', level, b_fmt)
         ws.write('A5', datetime.now().strftime("%y-%m-%d"), b_fmt)
 
         for idx, col in enumerate(df_final.columns):
